@@ -1,17 +1,18 @@
 # bili-edge-parse
 
-B 站视频解析边缘函数。把 BV 号拼到 API 域名后即可拿到可直接进播放器的代理流地址，默认请求 720P；无状态、不依赖数据库，仅使用标准 Web API（`fetch` / `Response` / `URL` / `Headers`）。
+B 站视频解析边缘函数。把 BV 号拼到 API 域名后即可拿到直连 B 站 CDN 的播放地址，默认请求 720P；无状态、不依赖数据库，仅使用标准 Web API（`fetch` / `Response` / `URL` / `Headers`）。
 
 ## 接口
 
 | 用途 | 链接 |
 | --- | --- |
 | 解析信息（JSON） | `/api/parse/<BV号>` |
-| 直接播放（302 跳到代理流） | `/api/play/<BV号>` |
-| 流代理 | `/api/stream?u=<上游地址>&b=<备用地址>` |
+| 直接播放（302 直连 B 站 CDN 签名地址） | `/api/play/<BV号>` |
+| 代理回退 | `/api/stream?u=<上游地址>&b=<备用地址>` |
 
 - 分 P：加 `?p=2`；也支持完整链接：`/api/parse?url=https://www.bilibili.com/video/BVxxxx/`
-- 流代理自动携带 `Referer: https://www.bilibili.com/`，透传 `Range` 请求，支持拖动进度。
+- JSON `data` 字段：`play` 为 B 站 CDN 直链（默认播放），`proxy` 为经边缘函数的代理回退，`raw` / `backup` 为原始主备签名地址。
+- 代理回退自动携带 `Referer: https://www.bilibili.com/`，透传 `Range` 请求，支持拖动进度；直链在无法自带 Referer 的播放器里可能 403，此时改用 `proxy`。
 - 示例：`https://bili.466949.xyz/api/parse/BV1qYyRz5EdM`
 
 ## 目录结构
@@ -78,7 +79,7 @@ npm run build
 
 - 默认请求 720P（`qn=64`）。未登录状态下部分视频会回落 480P/360P；稳定 720P 及以上需上游登录态（SESSDATA）。
 - 会员专属、付费、已下架内容无法解析。上游流地址有时效，过期后重新请求解析接口刷新即可。
-- B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl），本工程通过代理流地址直接供播放器打开。
+- B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl）；默认把签名直链返回给播放器直连 CDN，`proxy` 字段为代理回退。
 - 流代理白名单后缀：`.bilivideo.com`、`.bilivideo.cn`、`.akamaihd.net`、`.akamaized.net`、`.mountaintoys.cn`，非这些域名的地址一律 403，避免被当成开放代理。
 
 ## 各平台连通性说明（实测结论）

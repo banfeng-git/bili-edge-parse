@@ -262,7 +262,7 @@ function createHandler(options) {
 <pre>解析信息：/api/parse/BV1xxxxxxxxx
 直接播放：/api/play/BV1xxxxxxxxx
 分 P：?p=2；完整链接：?url=</pre>
-<p>流由边缘代理转发并携带 Referer，支持拖动进度。会员/付费/下架内容无法解析。</p>
+<p>播放地址默认直连 B 站 CDN；<code>proxy</code> 字段为代理回退（自动带 Referer，支持拖动）。会员/付费/下架内容无法解析。</p>
 </body></html>`;
   }
 
@@ -282,9 +282,12 @@ function createHandler(options) {
       if (!bvid) return jsonResponse({ code: 400, message: "缺少 BV 号" }, 400);
       try {
         const info = await resolveVideo(bvid, page);
-        const play = proxyStreamUrl(url.origin, info);
+        // 默认直连 B 站 CDN 签名地址，播放流量不经过边缘函数中转。
+        const direct = info.streamUrl || info.backupUrl;
+        // 代理地址仅作回退：播放器无法自带 Referer 时再用。
+        const proxy = proxyStreamUrl(url.origin, info);
         if (path.startsWith("/api/play")) {
-          return Response.redirect(play, 302);
+          return Response.redirect(direct, 302);
         }
         return jsonResponse({
           code: 0,
@@ -301,7 +304,8 @@ function createHandler(options) {
             quality: info.quality,
             quality_desc: info.qualityDesc,
             format: info.format,
-            play,
+            play: direct,
+            proxy,
             raw: info.streamUrl,
             backup: info.backupUrl,
           },
