@@ -9,8 +9,9 @@
  * 路由：
  *   /api/parse/<BV号>                           返回 JSON 信息 + 代理/直链地址
  *   /api/parse/pay/<BV号>                       同上，pay 为可选分类段
- *   /api/play/<BV号>                            302 跳本站代理（浏览器/普通 App 可播）
- *   /api/parse/play/<BV号>                      302 跳本站代理（play 为播放动作段）
+ *   /api/watch/<BV号>                           网页播放页（直链优先，出错回退代理）
+ *   /api/play/<BV号>                            浏览器打开出播放页；播放器取流 302 跳代理
+ *   /api/parse/play/<BV号>                      同上（play 为播放动作段）
  *   /api/stream?u=<上游地址>&b=<备用地址>        流代理（注入 Referer，透传 Range）
  *   其他路径                                    返回说明页
  *
@@ -44,8 +45,7 @@ function extractBvid(input) {
   return m ? m[0] : null;
 }
 
-function jsonResponse(data, status) {
-  return new Response(JSON.stringify(data, null, 2), {
+function jsonResponse(data, status) {  return new Response(JSON.stringify(data, null, 2), {
     status: status || 200,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
@@ -53,6 +53,12 @@ function jsonResponse(data, status) {
       "Cache-Control": "no-store",
     },
   });
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
 }
 
 function createHandler(options) {
@@ -289,9 +295,41 @@ function createHandler(options) {
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:48px auto;padding:0 20px;line-height:1.7}code,pre{background:rgba(127,127,127,.15);border-radius:6px;padding:2px 6px}pre{padding:12px;overflow:auto}</style>
 </head><body><h1>B 站视频解析</h1>
 <pre>解析信息：/api/parse/BV1xxxxxxxxx
-直接播放：/api/play/BV1xxxxxxxxx
+网页播放：/api/watch/BV1xxxxxxxxx
+直链/代理：见 JSON 的 direct、proxy 字段
 分 P：?p=2；完整链接：?url=</pre>
-<p><code>/api/play</code> 跳本站代理（自动带 Referer，浏览器可播，清晰度 480P）；<code>direct</code> 字段为 B 站 CDN 直链，需播放器自带 Referer。会员/付费/下架内容无法解析。</p>
+<p><code>/api/watch</code> 在浏览器内直连 CDN 播放（不带 Referer），被防盗链拦截时自动回退本站代理；会员/付费/下架内容无法解析。</p>
+</body></html>`;
+  }
+
+  function watchHtml(info, direct, proxy) {
+    const cfg = JSON.stringify({ direct, proxy });
+    return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>${escapeHtml(info.title)}</title>
+<style>
+body{margin:0;background:#111;color:#eee;font-family:system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
+h1{font-size:16px;font-weight:600;margin:8px 0 12px;text-align:center;max-width:900px}
+video{width:100%;max-width:900px;aspect-ratio:16/9;background:#000;border-radius:10px}
+#note{margin-top:10px;font-size:13px;color:#999}
+</style></head><body>
+<h1>${escapeHtml(info.title)}</h1>
+<video id="v" controls playsinline autoplay muted preload="metadata" referrerpolicy="no-referrer" poster="${escapeHtml(info.poster)}" src="${escapeHtml(direct)}"></video>
+<div id="note">清晰度 ${escapeHtml(info.qualityDesc)} · 直连 CDN 播放</div>
+<script>
+const cfg = ${cfg};
+const v = document.getElementById('v');
+const note = document.getElementById('note');
+let fallback = false;
+v.addEventListener('error', () => {
+  if (fallback) return;
+  fallback = true;
+  note.textContent = '直链被防盗链拦截，已切换本站代理播放';
+  v.src = cfg.proxy;
+  v.load();
+});
+</script>
 </body></html>`;
   }
 
@@ -301,24 +339,30 @@ function createHandler(options) {
 
     if (path === "/api/stream") return handleStream(request);
 
-    // 路径段：/api/[parse|play]/[可选分类段]/<BV号>。
-    // 第一段为 play，或中间动作段为 play，均 302 跳本站代理（兼容浏览器）；其余返回 JSON。
-    const routeMatch = path.match(/^\/api\/(parse|play)(?:\/([a-z]+))?\/(.+)$/);
+    // 路径段：/api/[parse|play|watch]/[可选分类段]/<BV号>。
+    const routeMatch = path.match(/^\/api\/(parse|play|watch)(?:\/([a-z]+))?\/(.+)$/);
     const seg1 = routeMatch ? routeMatch[1] : null;
     const seg2 = routeMatch ? routeMatch[2] : null;
     let bvid = routeMatch ? extractBvid(decodeURIComponent(routeMatch[3])) : null;
     if (!bvid) bvid = extractBvid(url.searchParams.get("url") || "");
     const page = parseInt(url.searchParams.get("p") || "1", 10) || 1;
     const isPlay = seg1 === "play" || seg2 === "play";
+    const isWatch = seg1 === "watch";
 
-    if (path.startsWith("/api/parse") || path.startsWith("/api/play")) {
+    if (path.startsWith("/api/parse") || path.startsWith("/api/play") || path.startsWith("/api/watch")) {
       if (!bvid) return jsonResponse({ code: 400, message: "缺少 BV 号" }, 400);
       try {
         const info = await resolveVideo(bvid, page);
-        // B 站 CDN 签名直链（优先宽松节点），仅给能自定义 Referer 的客户端使用。
+        // B 站 CDN 签名直链（优先宽松节点），网页页直连优先；proxy 为出错/不兼容客户端的代理兜底。
         const direct = pickDirect(info);
-        // 代理地址：浏览器/普通 App 无法伪造 B 站 Referer，默认走本站代理补 Referer，兼容播放。
         const proxy = proxyStreamUrl(url.origin, info);
+        const accept = request.headers.get("Accept") || "";
+        const wantHtml = isWatch || (isPlay && accept.includes("text/html"));
+        if (wantHtml) {
+          return new Response(watchHtml(info, direct, proxy), {
+            headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+          });
+        }
         if (isPlay) {
           return Response.redirect(proxy, 302);
         }

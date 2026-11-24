@@ -7,15 +7,17 @@ B 站视频解析边缘函数。把 BV 号拼到 API 域名后即可拿到可播
 | 用途 | 链接 |
 | --- | --- |
 | 解析信息（JSON） | `/api/parse/<BV号>` |
-| 直接播放（302 跳本站代理，浏览器/普通 App 可播） | `/api/play/<BV号>` |
+| 网页播放页（直连 CDN，出错回退代理） | `/api/watch/<BV号>` |
+| 播放入口：浏览器出网页页，播放器取流 302 跳代理 | `/api/play/<BV号>` |
 | 播放别名（同上） | `/api/parse/play/<BV号>` |
 | 流代理 | `/api/stream?u=<上游地址>&b=<备用地址>` |
 
 - 分 P：加 `?p=2`；也支持完整链接：`/api/parse?url=https://www.bilibili.com/video/BVxxxx/`
-- 播放器直接填 `/api/play/<BV号>`：函数解析后 302 到本站代理，代理自动补 `Referer: https://www.bilibili.com/` 并转发分片，浏览器/普通 App 无需自己带 Referer 即可播放；默认 480P 以匹配免费函数带宽。
-- JSON `data` 字段：`proxy` 为本站代理地址（默认可播），`direct` 为 B 站 CDN 签名直链（优先 akamai 宽松节点，需客户端自带 Referer 才能播），`raw` 为上游主域签名地址，`backup` / `backups` 为备用流域名列表。
-- Referer 现实：bilivideo 主域必须带 B 站 Referer 否则 403；浏览器/普通 App 无法伪造 Referer，所以默认走代理。能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `direct`/`raw` 直链以获得更高带宽。
-- 示例：`https://bili.466949.xyz/api/play/BV1qYyRz5EdM`
+- 浏览器打开 `/api/watch/<BV号>`：页面内 `<video referrerpolicy="no-referrer">` 直连 B 站 CDN（优先 akamai 宽松节点），视频流量不经过函数；若直链被防盗链拦截，页面自动切到本站代理兜底。默认 480P，未登录可能回落 360P。
+- 第三方播放器/App 直接取流时，`/api/play` 返回 302 到本站代理（代理自动补 `Referer: https://www.bilibili.com/` 并转发分片），兼容性最好；受免费函数出口带宽限制。
+- JSON `data` 字段：`direct` 为 B 站 CDN 签名直链（优先 akamai 宽松节点），`proxy` 为本站代理地址，`raw` 为上游主域签名地址，`backup` / `backups` 为备用流域名列表。
+- Referer 现实：bilivideo 主域必须带 B 站 Referer 否则 403；akamai 宽松节点不带 Referer 也能放行。能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `direct`/`raw` 直链以获得更高带宽。
+- 示例：`https://bili.466949.xyz/api/watch/BV1qYyRz5EdM`
 
 ## 目录结构
 
@@ -81,15 +83,15 @@ npm run build
 
 - 默认请求 480P（`qn=32`），以匹配免费函数代理带宽；未登录状态下部分视频会回落 360P。稳定 720P 及以上需上游登录态（SESSDATA）或更高带宽的中转后端。
 - 会员专属、付费、已下架内容无法解析。上游流地址有时效，过期后重新请求解析接口刷新即可。
-- B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl）；`play` 返回签名直链，`proxy` 字段为边缘代理回退。
+- B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl）；`direct` 为签名直链，`proxy` 字段为边缘代理回退。
 - 流代理白名单后缀：`.bilivideo.com`、`.bilivideo.cn`、`.akamaihd.net`、`.akamaized.net`、`.mountaintoys.cn`，非这些域名的地址一律 403，避免被当成开放代理。
 
 ### 浏览器 / 普通 App 播放的两层限制（2026-11-25 实测）
 
-1. **直链防盗链 403**：B 站 CDN 只认 `Referer: https://www.bilibili.com/`。浏览器与普通 App 出于安全策略无法把 Referer 伪造成 B 站，直链在这类环境会返回 `Access Denied / 403`；只有能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `play`/`raw` 直链。
+1. **直链防盗链 403**：bilivideo 主域只认 `Referer: https://www.bilibili.com/`，浏览器与普通 App 无法把 Referer 伪造成 B 站，直取该主域会 `Access Denied / 403`；akamai 宽松节点不带 Referer 也能放行。网页播放页 `/api/watch` 给 video 设 `no-referrer` 并优先选 akamai 节点，可在浏览器直连 CDN；若只分到 bilivideo 主域，页面自动回退代理。能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `direct`/`raw` 直链。
 2. **免费边缘代理带宽有限**：`/api/stream` 代理自动补 B 站 Referer；无 Range 的整段回源会被前置安全防护拦截（567），现已改为默认只取前 512KB 分片、拖动时再按 Range 分片转发以规避。但免费函数出口带宽约 36 KB/s，仅够 480P/360P，长视频高码率仍可能缓冲；免费版 ESA 的全局 WAF、全网限流均为企业版功能，控制台无放行入口。
 
-**结论**：在免费边缘平台上，浏览器/普通 App 内直连播放不可稳定落地。要兼容网页与普通播放器，需要自备不限流的中转后端（VPS / 对象存储 / 第三方解析 API），或升级可配 WAF、带宽更高的企业版；直链方案仅适用于能手动填 Referer 的客户端。
+**结论**：浏览器内可通过网页页直连 akamai 宽松节点播放；分到受限主域或在第三方 App/盒子里取流时，仍需代理兜底。要稳定高清、不限流，需要自备中转后端（VPS / 对象存储 / 第三方解析 API），或升级可配 WAF、带宽更高的企业版。
 
 ## 各平台连通性说明（实测结论）
 
