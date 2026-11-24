@@ -58,10 +58,12 @@ npm run build
 - 把 `dist/cloudflare-pages-function.js` 内容放到 Pages 项目根目录 `functions/[[catchall]].js`。
 - 导出 `onRequest(context)`，内部调用 `context.request`。
 
-### 腾讯 EdgeOne 站点级边缘函数
+### 腾讯 EdgeOne 站点级边缘函数 — 已上线实测
 
 - 入口形式：Service Worker 风格 `addEventListener("fetch", event => event.respondWith(...))`，**不支持 ES import**。
 - 控制台函数代码粘贴 `dist/edgeone-edge-function.js`（已内联核心，单文件），再配置匹配站点 HOST / 路径的触发规则。
+- 当前生产域名：`https://bili.cotd.top`（站点 `cotd.top`，触发规则按 HOST 命中本函数）；免费证书签发前浏览器会提示证书不安全，命令行可加 `-k` 验证。
+- 实测（BV1qYyRz5EdM，360P 回落片）：解析 200 JSON，边缘出口未被 B 站 WAF 412；`/api/stream` 代理 8MB 分片持续约 **2.0–2.2 MB/s**，对照同片 ESA 约 **433 KB/s**，EdgeOne 代理带宽明显更高。
 
 ### 腾讯 EdgeOne Pages Functions
 
@@ -89,7 +91,7 @@ npm run build
 ### 浏览器 / 普通 App 播放的两层限制（2026-11-25 实测）
 
 1. **直链防盗链 403**：bilivideo 主域只认 `Referer: https://www.bilibili.com/`，浏览器与普通 App 无法把 Referer 伪造成 B 站，直取该主域会 `Access Denied / 403`；akamai 宽松节点不带 Referer 也能放行。网页播放页 `/api/watch` 给 video 设 `no-referrer` 并优先选 akamai 节点，可在浏览器直连 CDN；若只分到 bilivideo 主域，页面自动回退代理。能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `direct`/`raw` 直链。
-2. **免费边缘代理带宽有限**：`/api/stream` 代理自动补 B 站 Referer；无 Range 的整段回源会被前置安全防护拦截（567），现已改为默认只取前 512KB 分片、拖动时再按 Range 分片转发以规避。但免费函数出口带宽约 36 KB/s，仅够 480P/360P，长视频高码率仍可能缓冲；免费版 ESA 的全局 WAF、全网限流均为企业版功能，控制台无放行入口。
+2. **免费边缘代理带宽有限**：`/api/stream` 代理自动补 B 站 Referer；无 Range 的整段回源会被前置安全防护拦截（567），现已改为默认只取前 512KB 分片、拖动时再按 Range 分片转发以规避。带宽随平台节点波动：同一片 360P 视频，ESA 代理 8MB 分片约 433 KB/s，EdgeOne 约 2.0–2.2 MB/s；长视频高码率仍可能缓冲。免费版 ESA 的全局 WAF、全网限流均为企业版功能，控制台无放行入口。
 
 **结论**：浏览器内可通过网页页直连 akamai 宽松节点播放；分到受限主域或在第三方 App/盒子里取流时，仍需代理兜底。要稳定高清、不限流，需要自备中转后端（VPS / 对象存储 / 第三方解析 API），或升级可配 WAF、带宽更高的企业版。
 
@@ -97,7 +99,7 @@ npm run build
 
 - **阿里云 ESA**：边缘出口未被 B 站 WAF 拦截，解析 / 取流正常；`/api/stream` 分片（带 Range）可 206 转发，但整段回源被前置防护 567，且免费函数带宽有限（见上节）。
 - **Cloudflare**：历史实测 CF 边缘出口 IP 段 / TLS 指纹会被 B 站接口全量 412（`request was banned`），换 buvid Cookie、补浏览器头均无效；CF 方向如需可用，应接不在黑名单的第三方中转后端。`/api/stream` 代理本身在传入已签名 CDN 地址时可用（注入 Referer、透传 Range）。
-- **腾讯 EdgeOne**：入口与核心逻辑本地 harness 跑通（parse 200、play 302、stream 206），线上连通性未实测；若直连被风控，同样改用第三方中转。
+- **腾讯 EdgeOne**：线上实测出口未被 B 站 WAF 拦截（parse 200、watch 200、play 播放器取流 302、stream 206）；代理持续带宽约 2.0–2.2 MB/s（8MB 分片），优于同片 ESA 的约 433 KB/s。默认函数域名 `*.eo-edgefunctions1.com` 从大陆网络 TLS 握手被重置，需绑定站点内已加速的自定义域名并配触发规则才能稳定访问。
 
 ## 本地验证
 
