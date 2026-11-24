@@ -7,11 +7,11 @@
  * 仅使用标准 Web API（fetch / Response / URL / Headers），不依赖数据库与 Node 内置模块。
  *
  * 路由：
- *   /api/parse/<BV号>                           返回 JSON 信息 + 直链/回退地址
+ *   /api/parse/<BV号>                           返回 JSON 信息 + 代理/直链地址
  *   /api/parse/pay/<BV号>                       同上，pay 为可选分类段
- *   /api/play/<BV号>                            302 直跳 B 站 CDN 签名地址
- *   /api/parse/play/<BV号>                      302 直跳 B 站 CDN 签名地址（play 为播放动作段）
- *   /api/stream?u=<上游地址>&b=<备用地址>        流代理（注入 Referer，透传 Range），仅作回退
+ *   /api/play/<BV号>                            302 跳本站代理（浏览器/普通 App 可播）
+ *   /api/parse/play/<BV号>                      302 跳本站代理（play 为播放动作段）
+ *   /api/stream?u=<上游地址>&b=<备用地址>        流代理（注入 Referer，透传 Range）
  *   其他路径                                    返回说明页
  *
  * 各边缘平台只需在入口里调用 createHandler() 拿到 handleRequest 并接入自己的运行时。
@@ -123,7 +123,7 @@ function createHandler(options) {
     };
   }
 
-  /** 直连 B 站取流（默认 720P，拿不到回落可用清晰度） */
+  /** 直连 B 站取流（默认请求 480P，未登录可能回落 360P） */
   async function resolveDirect(bvid, page) {
     const cookie = await fetchBuvid();
 
@@ -162,7 +162,7 @@ function createHandler(options) {
 
     const playUrl =
       `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}` +
-      `&cid=${cid}&qn=64&fnval=1&fourk=1&otype=json`;
+      `&cid=${cid}&qn=32&fnval=1&fourk=1&otype=json`;
     const play = await fetchJson(playUrl, cookie);
     if (play.code !== 0) {
       throw new Error(`[playurl ${play.code}] ${play.message || "播放地址获取失败"}`);
@@ -251,8 +251,11 @@ function createHandler(options) {
     headers.set("User-Agent", UA);
     headers.set("Referer", REFERER);
     headers.set("Accept", "*/*");
-    const range = request.headers.get("Range");
-    if (range) headers.set("Range", range);
+    // 无 Range 时默认只取前 512KB 分片，避免整段回源被前置安全防护按大响应拦截（567）；
+    // 播放器拖动进度时会再发带 Range 的分片请求。
+    let range = request.headers.get("Range");
+    if (!range) range = "bytes=0-524287";
+    headers.set("Range", range);
 
     let lastErr = null;
     for (const target of candidates) {
@@ -267,6 +270,7 @@ function createHandler(options) {
           const v = upstream.headers.get(k);
           if (v) out.set(k, v);
         });
+        if (!out.get("Accept-Ranges")) out.set("Accept-Ranges", "bytes");
         out.set("Access-Control-Allow-Origin", "*");
         out.set("Cache-Control", "no-store");
         return new Response(upstream.body, { status: upstream.status, headers: out });
@@ -285,9 +289,9 @@ function createHandler(options) {
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:48px auto;padding:0 20px;line-height:1.7}code,pre{background:rgba(127,127,127,.15);border-radius:6px;padding:2px 6px}pre{padding:12px;overflow:auto}</style>
 </head><body><h1>B 站视频解析</h1>
 <pre>解析信息：/api/parse/BV1xxxxxxxxx
-直接播放：/api/parse/play/BV1xxxxxxxxx
+直接播放：/api/play/BV1xxxxxxxxx
 分 P：?p=2；完整链接：?url=</pre>
-<p>播放地址默认直连 B 站 CDN；<code>proxy</code> 字段为代理回退（自动带 Referer，支持拖动）。会员/付费/下架内容无法解析。</p>
+<p><code>/api/play</code> 跳本站代理（自动带 Referer，浏览器可播，清晰度 480P）；<code>direct</code> 字段为 B 站 CDN 直链，需播放器自带 Referer。会员/付费/下架内容无法解析。</p>
 </body></html>`;
   }
 
@@ -298,7 +302,7 @@ function createHandler(options) {
     if (path === "/api/stream") return handleStream(request);
 
     // 路径段：/api/[parse|play]/[可选分类段]/<BV号>。
-    // 第一段为 play，或中间动作段为 play，均直接 302 跳 B 站 CDN；其余返回 JSON。
+    // 第一段为 play，或中间动作段为 play，均 302 跳本站代理（兼容浏览器）；其余返回 JSON。
     const routeMatch = path.match(/^\/api\/(parse|play)(?:\/([a-z]+))?\/(.+)$/);
     const seg1 = routeMatch ? routeMatch[1] : null;
     const seg2 = routeMatch ? routeMatch[2] : null;
@@ -311,12 +315,12 @@ function createHandler(options) {
       if (!bvid) return jsonResponse({ code: 400, message: "缺少 BV 号" }, 400);
       try {
         const info = await resolveVideo(bvid, page);
-        // 直连 B 站 CDN 签名地址，播放流量不经过边缘函数中转；优先宽松节点。
+        // B 站 CDN 签名直链（优先宽松节点），仅给能自定义 Referer 的客户端使用。
         const direct = pickDirect(info);
-        // 代理地址仅作回退：播放器无法自带 Referer 时再用。
+        // 代理地址：浏览器/普通 App 无法伪造 B 站 Referer，默认走本站代理补 Referer，兼容播放。
         const proxy = proxyStreamUrl(url.origin, info);
         if (isPlay) {
-          return Response.redirect(direct, 302);
+          return Response.redirect(proxy, 302);
         }
         return jsonResponse({
           code: 0,
@@ -333,7 +337,8 @@ function createHandler(options) {
             quality: info.quality,
             quality_desc: info.qualityDesc,
             format: info.format,
-            play: direct,
+            // proxy：本站代理，浏览器/普通 App 默认可播；direct：CDN 直链，需客户端自带 B 站 Referer。
+            direct,
             proxy,
             raw: info.streamUrl,
             backup: info.backupUrl,
