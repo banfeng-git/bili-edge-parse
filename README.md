@@ -8,12 +8,14 @@ B 站视频解析边缘函数。把 BV 号拼到 API 域名后即可拿到直连
 | --- | --- |
 | 解析信息（JSON） | `/api/parse/<BV号>` |
 | 直接播放（302 直连 B 站 CDN 签名地址） | `/api/play/<BV号>` |
+| 播放别名（同上，302 直跳 CDN） | `/api/parse/play/<BV号>` |
 | 代理回退 | `/api/stream?u=<上游地址>&b=<备用地址>` |
 
 - 分 P：加 `?p=2`；也支持完整链接：`/api/parse?url=https://www.bilibili.com/video/BVxxxx/`
+- 播放器直接填 `/api/play/<BV号>` 即可：边缘函数只做解析，302 跳到 B 站 CDN 签名地址，播放流量直连 B 站服务器、不经函数中转。
 - JSON `data` 字段：`play` 为 B 站 CDN 直链（默认播放），`proxy` 为经边缘函数的代理回退，`raw` / `backup` 为原始主备签名地址。
 - 代理回退自动携带 `Referer: https://www.bilibili.com/`，透传 `Range` 请求，支持拖动进度；直链在无法自带 Referer 的播放器里可能 403，此时改用 `proxy`。
-- 示例：`https://bili.466949.xyz/api/parse/BV1qYyRz5EdM`
+- 示例：`https://bili.466949.xyz/api/play/BV1qYyRz5EdM`
 
 ## 目录结构
 

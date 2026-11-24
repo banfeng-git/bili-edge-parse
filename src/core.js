@@ -3,9 +3,11 @@
  * 仅使用标准 Web API（fetch / Response / URL / Headers），不依赖数据库与 Node 内置模块。
  *
  * 路由：
- *   /api/parse/<BV号>                          返回 JSON 信息 + 代理流地址
- *   /api/play/<BV号>                           302 跳转到代理流
- *   /api/stream?u=<上游地址>&b=<备用地址>        流代理（注入 Referer，透传 Range）
+ *   /api/parse/<BV号>                           返回 JSON 信息 + 直链/回退地址
+ *   /api/parse/pay/<BV号>                       同上，pay 为可选分类段
+ *   /api/play/<BV号>                            302 直跳 B 站 CDN 签名地址
+ *   /api/parse/play/<BV号>                      302 直跳 B 站 CDN 签名地址（play 为播放动作段）
+ *   /api/stream?u=<上游地址>&b=<备用地址>        流代理（注入 Referer，透传 Range），仅作回退
  *   其他路径                                    返回说明页
  *
  * 各边缘平台只需在入口里调用 createHandler() 拿到 handleRequest 并接入自己的运行时。
@@ -256,7 +258,7 @@ function createHandler(options) {
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:48px auto;padding:0 20px;line-height:1.7}code,pre{background:rgba(127,127,127,.15);border-radius:6px;padding:2px 6px}pre{padding:12px;overflow:auto}</style>
 </head><body><h1>B 站视频解析</h1>
 <pre>解析信息：/api/parse/BV1xxxxxxxxx
-直接播放：/api/play/BV1xxxxxxxxx
+直接播放：/api/parse/play/BV1xxxxxxxxx
 分 P：?p=2；完整链接：?url=</pre>
 <p>播放地址默认直连 B 站 CDN；<code>proxy</code> 字段为代理回退（自动带 Referer，支持拖动）。会员/付费/下架内容无法解析。</p>
 </body></html>`;
@@ -268,11 +270,15 @@ function createHandler(options) {
 
     if (path === "/api/stream") return handleStream(request);
 
-    let bvid = null;
-    let match = path.match(/^\/api\/(?:parse|play)\/(.+)$/);
-    if (match) bvid = extractBvid(decodeURIComponent(match[1]));
+    // 路径段：/api/[parse|play]/[可选分类段]/<BV号>。
+    // 第一段为 play，或中间动作段为 play，均直接 302 跳 B 站 CDN；其余返回 JSON。
+    const routeMatch = path.match(/^\/api\/(parse|play)(?:\/([a-z]+))?\/(.+)$/);
+    const seg1 = routeMatch ? routeMatch[1] : null;
+    const seg2 = routeMatch ? routeMatch[2] : null;
+    let bvid = routeMatch ? extractBvid(decodeURIComponent(routeMatch[3])) : null;
     if (!bvid) bvid = extractBvid(url.searchParams.get("url") || "");
     const page = parseInt(url.searchParams.get("p") || "1", 10) || 1;
+    const isPlay = seg1 === "play" || seg2 === "play";
 
     if (path.startsWith("/api/parse") || path.startsWith("/api/play")) {
       if (!bvid) return jsonResponse({ code: 400, message: "缺少 BV 号" }, 400);
@@ -282,7 +288,7 @@ function createHandler(options) {
         const direct = info.streamUrl || info.backupUrl;
         // 代理地址仅作回退：播放器无法自带 Referer 时再用。
         const proxy = proxyStreamUrl(url.origin, info);
-        if (path.startsWith("/api/play")) {
+        if (isPlay) {
           return Response.redirect(direct, 302);
         }
         return jsonResponse({
