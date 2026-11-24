@@ -83,7 +83,7 @@ npm run build
 
 ## 清晰度与限制
 
-- 默认请求 1080P 档（`qn=80`，可用 `?qn=` 覆盖）。**2026-11-25 实测**：同一 BV、同一接口，住宅/普通出口带不带 cookie 都能拿到 720P（quality 64），但 EdgeOne 边缘机房出口被风控压到 360P（quality 16），与 buvid/cookie、qn 参数无关，是机房 IP 段身份限档；免费边缘函数平台普遍如此。稳定 720P 及以上需上游登录态（SESSDATA）、住宅出口 VPS 或第三方中转后端。
+- 默认请求 1080P 档（`qn=80`，可用 `?qn=` 覆盖）。**2026-11-25 实测**：EdgeOne 出口命中宽松 akamai / P2P 坏节点时会被风控压到 360P（quality 16）；把选流与代理回源切到正规 `bilivideo.com` CDN 后，同一出口连续多次稳定取到 720P（quality 64，mp4720）。720P 以上（1080P/高帧率/4K）仍需登录态（SESSDATA）、大会员或住宅出口 VPS / 第三方中转后端。
 - **登录 Cookie（可选，解高清）**：在平台边缘函数的环境变量/密钥中配置 `BILI_COOKIE`，值为完整登录 Cookie 串（`SESSDATA=...; bili_jct=...; DedeUserID=...`），代码运行时读取并随上游请求带上；凭证只存平台 Secret，不写入代码与仓库。未配置时按游客身份取流。机房出口叠加登录态能否解除 360P 限档需线上验证。
 - 会员专属、付费、已下架内容无法解析。上游流地址有时效，过期后重新请求解析接口刷新即可。
 - B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl）；`direct` 为签名直链，`proxy` 字段为边缘代理回退。
@@ -92,16 +92,16 @@ npm run build
 
 ### 浏览器 / 普通 App 播放的两层限制（2026-11-25 实测）
 
-1. **直链防盗链 403**：bilivideo 主域只认 `Referer: https://www.bilibili.com/`，浏览器与普通 App 无法把 Referer 伪造成 B 站，直取该主域会 `Access Denied / 403`；akamai 宽松节点不带 Referer 也能放行。网页播放页 `/api/watch` 给 video 设 `no-referrer` 并优先选 akamai 节点，可在浏览器直连 CDN；若只分到 bilivideo 主域，页面自动回退代理。能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `direct`/`raw` 直链。
-2. **免费边缘代理带宽有限**：`/api/stream` 代理自动补 B 站 Referer；无 Range 的整段回源会被前置安全防护拦截（567），现已改为默认只取前 512KB 分片、拖动时再按 Range 分片转发以规避。带宽随平台节点波动：同一片 360P 视频，ESA 代理 8MB 分片约 433 KB/s，EdgeOne 约 2.0–2.2 MB/s；长视频高码率仍可能缓冲。免费版 ESA 的全局 WAF、全网限流均为企业版功能，控制台无放行入口。
+1. **直链防盗链 403**：bilivideo 主域只认 `Referer: https://www.bilibili.com/`，浏览器与普通 App 无法把 Referer 伪造成 B 站，直取该主域会 `Access Denied / 403`；akamai 宽松节点也并非全部放行。网页播放页 `/api/watch` 因此统一走本站代理起播（代理补 Referer、节点经质量优选），不再先直连撞墙再回退；`direct`/`raw` 直链只留给能自定义 Referer 的播放器（MPV、IINA 等）。
+2. **免费边缘代理带宽有限**：`/api/stream` 代理自动补 B 站 Referer；无 Range 的整段回源会被前置安全防护拦截（567），现已改为默认只取前 512KB 分片、拖动时再按 Range 分片转发以规避。带宽随平台节点波动：同一片视频，ESA 代理 8MB 分片约 433 KB/s，EdgeOne 约 2.9–3.1 MB/s；长视频高码率仍可能缓冲。免费版 ESA 的全局 WAF、全网限流均为企业版功能，控制台无放行入口。
 
-**结论**：浏览器内可通过网页页直连 akamai 宽松节点播放；分到受限主域或在第三方 App/盒子里取流时，仍需代理兜底。要稳定高清、不限流，需要自备中转后端（VPS / 对象存储 / 第三方解析 API），或升级可配 WAF、带宽更高的企业版。
+**结论**：网页页经本站代理起播（节点优选到正规 CDN）；能自定义 Referer 的播放器可直接用 `direct`/`raw` 直链。720P 在节点优选后的 EdgeOne 出口可稳定取到，1080P 及以上、长视频高码率仍可能缓冲，需要登录态、自备中转后端（VPS / 对象存储 / 第三方解析 API）或更高带宽的企业版。
 
 ## 各平台连通性说明（实测结论）
 
 - **阿里云 ESA**：边缘出口未被 B 站 WAF 拦截，解析 / 取流正常；`/api/stream` 分片（带 Range）可 206 转发，但整段回源被前置防护 567，且免费函数带宽有限（见上节）。
 - **Cloudflare**：历史实测 CF 边缘出口 IP 段 / TLS 指纹会被 B 站接口全量 412（`request was banned`），换 buvid Cookie、补浏览器头均无效；CF 方向如需可用，应接不在黑名单的第三方中转后端。`/api/stream` 代理本身在传入已签名 CDN 地址时可用（注入 Referer、透传 Range）。
-- **腾讯 EdgeOne**：线上实测出口未被 B 站 WAF 拦截（parse 200、watch 200、play 播放器取流 302、stream 206）；代理持续带宽约 2.9–3.2 MB/s（8MB 分片），优于同片 ESA 的约 433 KB/s。但出口机房 IP 段被 B 站风控压到 360P（同片住宅出口可取 720P），高清需登录态/中转/住宅 VPS。默认函数域名 `*.eo-edgefunctions1.com` 从大陆网络 TLS 握手被重置，需绑定站点内已加速的自定义域名并配触发规则才能稳定访问。
+- **腾讯 EdgeOne**：线上实测出口未被 B 站 WAF 拦截（parse 200、watch 200、play 播放器取流 302、stream 206）；代理持续带宽约 2.9–3.1 MB/s（8MB 分片），优于同片 ESA 的约 433 KB/s。节点优选到正规 `bilivideo.com` 后可稳定取 720P；早期命中 akamai/P2P 节点时回落 360P。1080P 及以上仍需登录态/中转/住宅 VPS。默认函数域名 `*.eo-edgefunctions1.com` 从大陆网络 TLS 握手被重置，需绑定站点内已加速的自定义域名并配触发规则才能稳定访问。
 
 ## 本地验证
 
