@@ -83,7 +83,7 @@ npm run build
 
 ## 清晰度与限制
 
-- 默认请求 1080P 档（`qn=80`，可用 `?qn=` 覆盖），按游客身份回落；本机直连可拿到 720P，边缘机房出口若被风控可能回落 360P，需线上复核。稳定 1080P 及以上需上游登录态（SESSDATA）或更高带宽的中转后端。
+- 默认请求 1080P 档（`qn=80`，可用 `?qn=` 覆盖）。**2026-11-25 实测**：同一 BV、同一接口，住宅/普通出口带不带 cookie 都能拿到 720P（quality 64），但 EdgeOne 边缘机房出口被风控压到 360P（quality 16），与 buvid/cookie、qn 参数无关，是机房 IP 段身份限档；免费边缘函数平台普遍如此。稳定 720P 及以上需上游登录态（SESSDATA）、住宅出口 VPS 或第三方中转后端。
 - 会员专属、付费、已下架内容无法解析。上游流地址有时效，过期后重新请求解析接口刷新即可。
 - B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl）；`direct` 为签名直链，`proxy` 字段为边缘代理回退。
 - 流代理白名单后缀：`.bilivideo.com`、`.bilivideo.cn`、`.akamaihd.net`、`.akamaized.net`、`.mountaintoys.cn`，非这些域名的地址一律 403，避免被当成开放代理。
@@ -99,7 +99,7 @@ npm run build
 
 - **阿里云 ESA**：边缘出口未被 B 站 WAF 拦截，解析 / 取流正常；`/api/stream` 分片（带 Range）可 206 转发，但整段回源被前置防护 567，且免费函数带宽有限（见上节）。
 - **Cloudflare**：历史实测 CF 边缘出口 IP 段 / TLS 指纹会被 B 站接口全量 412（`request was banned`），换 buvid Cookie、补浏览器头均无效；CF 方向如需可用，应接不在黑名单的第三方中转后端。`/api/stream` 代理本身在传入已签名 CDN 地址时可用（注入 Referer、透传 Range）。
-- **腾讯 EdgeOne**：线上实测出口未被 B 站 WAF 拦截（parse 200、watch 200、play 播放器取流 302、stream 206）；代理持续带宽约 2.0–2.2 MB/s（8MB 分片），优于同片 ESA 的约 433 KB/s。默认函数域名 `*.eo-edgefunctions1.com` 从大陆网络 TLS 握手被重置，需绑定站点内已加速的自定义域名并配触发规则才能稳定访问。
+- **腾讯 EdgeOne**：线上实测出口未被 B 站 WAF 拦截（parse 200、watch 200、play 播放器取流 302、stream 206）；代理持续带宽约 2.9–3.2 MB/s（8MB 分片），优于同片 ESA 的约 433 KB/s。但出口机房 IP 段被 B 站风控压到 360P（同片住宅出口可取 720P），高清需登录态/中转/住宅 VPS。默认函数域名 `*.eo-edgefunctions1.com` 从大陆网络 TLS 握手被重置，需绑定站点内已加速的自定义域名并配触发规则才能稳定访问。
 
 ## 本地验证
 
