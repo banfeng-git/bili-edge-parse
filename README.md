@@ -7,16 +7,16 @@ B 站视频解析边缘函数。把 BV 号拼到 API 域名后即可拿到可播
 | 用途 | 链接 |
 | --- | --- |
 | 解析信息（JSON） | `/api/parse/<BV号>` |
-| 网页播放页（直连 CDN，出错回退代理） | `/api/watch/<BV号>` |
+| 网页播放页（本站代理起播） | `/api/watch/<BV号>` |
 | 播放入口：浏览器出网页页，播放器取流 302 跳代理 | `/api/play/<BV号>` |
 | 播放别名（同上） | `/api/parse/play/<BV号>` |
 | 流代理 | `/api/stream?u=<上游地址>&b=<备用地址>` |
 
 - 分 P：加 `?p=2`；也支持完整链接：`/api/parse?url=https://www.bilibili.com/video/BVxxxx/`
-- 浏览器打开 `/api/watch/<BV号>`：分到 akamai 宽松节点时页面内 `<video referrerpolicy="no-referrer">` 直连 CDN，视频流量不经过函数；只分到 bilivideo 主域（必须带 Referer）时网页页直接用本站代理起播，避免先 403 再回退。画质按游客身份回落，通常 720P，部分片源 360P。
-- 第三方播放器/App 直接取流时，`/api/play` 返回 302：宽松节点直连，主域走本站代理（代理自动补 `Referer: https://www.bilibili.com/` 并转发分片）；受免费函数出口带宽限制。
-- JSON `data` 字段：`direct` 为 B 站 CDN 签名直链（优先 akamai 宽松节点），`proxy` 为本站代理地址，`raw` 为上游主域签名地址，`backup` / `backups` 为备用流域名列表。
-- Referer 现实：bilivideo 主域必须带 B 站 Referer 否则 403；akamai 宽松节点不带 Referer 也能放行。能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `direct`/`raw` 直链以获得更高带宽。
+- 浏览器打开 `/api/watch/<BV号>`：网页页统一走本站代理起播（代理补 `Referer`、节点经质量优选、带 backup 兜底），不再先直连撞 403 再回退。画质按游客身份回落，节点优选后通常 720P，部分片源 360P。
+- 第三方播放器/App 直接取流时，`/api/play` 返回 302 统一跳本站代理（代理自动补 `Referer: https://www.bilibili.com/` 并转发分片，主链最优节点 + 次优 backup）；受免费函数出口带宽限制。
+- JSON `data` 字段：`direct` 为 B 站 CDN 签名直链（仅提供给能自定义 Referer 的播放器），`proxy` 为本站代理地址，`raw` 为上游主域签名地址，`backup` / `backups` 为备用流域名列表。
+- Referer 现实：bilivideo 主域必须带 B 站 Referer 否则 403；akamai 节点裸连是否放行不稳定，2026-11-25 实测同样可能 403。普通浏览器/App 请用 `proxy`；能自定义 Referer 的播放器（MPV、IINA 等）可直接用 `direct`/`raw` 直链以获得更高带宽。
 - 示例：`https://bili.466949.xyz/api/watch/BV1qYyRz5EdM`
 
 ## 目录结构
