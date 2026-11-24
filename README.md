@@ -40,35 +40,67 @@ npm run build
 # 等价于 node tools/build.mjs，输出到 dist/
 ```
 
-## 各平台部署
+## 部署
+
+### 通用步骤
+
+1. 构建内联单文件（仓库无第三方依赖，Node 18+ 即可）：
+
+   ```bash
+   npm run build   # 等价 node tools/build.mjs，产物输出到 dist/
+   ```
+
+   - `dist/*.js` 已把 `src/core.js` 内联进入口，**无 ES import，可整段直接粘贴到平台控制台**。
+   - `src/` 下入口带相对 `import`，仅当用 Git / CLI 源码方式部署时，才需要把 `src/` 连同核心一起带上并由平台打包。
+
+2. 所有路由都挂在 `/api/...` 下，函数需要匹配站点全部路径（catch-all），不要只匹配某个子路径。
+
+3. 可选环境变量 `BILI_COOKIE`（解高清；不配置则按游客身份取流）：在平台的环境变量 / Secret 中填完整登录 Cookie 串
+   `SESSDATA=...; bili_jct=...; DedeUserID=...`；凭证只存平台 Secret，不写进代码与仓库。
+   当前仅 **EdgeOne 站点级边缘函数**入口读取 `env.BILI_COOKIE`；其余入口默认游客取流，需要时在入口的 `createHandler({ biliCookie })` 中传入。
+
+### 产物与入口对照
+
+| 平台 | dist 产物 | 入口导出形式 | 部署位置 |
+| --- | --- | --- | --- |
+| 阿里云 ESA（EdgeRoutine） | `dist/aliyun-esa.js` | `export default { async fetch(request, context, env) }` | ESA 边缘函数控制台 |
+| Cloudflare Workers | `dist/cloudflare-worker.js` | `export default { async fetch(request, env, ctx) }` | Workers 控制台或 Wrangler |
+| Cloudflare Pages Functions | `dist/cloudflare-pages-function.js` | `export async function onRequest(context)` | Pages 项目 `functions/[[catchall]].js` |
+| 腾讯 EdgeOne 站点级边缘函数 | `dist/edgeone-edge-function.js` | Service Worker：`addEventListener("fetch", ...)` | EdgeOne 函数控制台 + 触发规则 |
+| 腾讯 EdgeOne Pages Functions | `dist/edgeone-pages-function.js` | `export default async function onRequest({ request })` | Pages 项目 `edge-functions/[[default]].js` |
 
 ### 阿里云 ESA（EdgeRoutine）— 已上线实测
 
-- 入口形式：模块对象 `export default { async fetch(request, context, env) }`。
-- 控制台函数代码直接粘贴 `dist/aliyun-esa.js`，保存 → 生成版本 → 快速发布到生产。
-- 当前生产域名：`https://bili.466949.xyz`。
+1. ESA 控制台进入站点 → 边缘函数 / EdgeRoutine，新建函数。
+2. 把 `dist/aliyun-esa.js` 整段粘贴到函数代码编辑器。
+3. 保存 → 生成版本 → 发布到生产环境，并绑定到加速域名（当前生产：`https://bili.466949.xyz`）。
+4. 注意：ESA 免费版全局 WAF、全网限流为企业版功能，控制台无放行入口；`/api/stream` 整段回源可能被前置防护 567，代码已改为按 Range 分片转发规避。
 
 ### Cloudflare Workers
 
-- 入口形式：模块对象 `export default { async fetch(request, env, ctx) }`。
-- 控制台粘贴 `dist/cloudflare-worker.js`，或用 Wrangler 部署 `src/cloudflare-worker/entry.js`。
+> 历史实测：CF 边缘出口 IP 段 / TLS 指纹会被 B 站接口全量 412（`request was banned`），换 buvid Cookie、补浏览器头均无效；CF 上直连 B 站基本不可用，需接第三方中转后端。代理本身在传入已签名 CDN 地址时可用（注入 Referer、透传 Range）。
+
+- **控制台方式**：Workers 新建项目，粘贴 `dist/cloudflare-worker.js`，保存并部署。
+- **CLI 方式**：用 Wrangler；源码方式需把 `src/` 作为同一 Worker 项目打包（`src/cloudflare-worker/entry.js` 依赖 `../core.js`），或直接以构建产物 `dist/cloudflare-worker.js` 作为入口。
 
 ### Cloudflare Pages Functions
 
-- 把 `dist/cloudflare-pages-function.js` 内容放到 Pages 项目根目录 `functions/[[catchall]].js`。
-- 导出 `onRequest(context)`，内部调用 `context.request`。
+1. Pages 项目的函数目录下新建 `functions/[[catchall]].js`。
+2. 粘贴 `dist/cloudflare-pages-function.js` 内容（导出 `onRequest(context)`，内部取 `context.request`）。
+3. 所有路径进入同一处理函数；同样受上面 CF 出口 412 限制。
 
 ### 腾讯 EdgeOne 站点级边缘函数 — 已上线实测
 
-- 入口形式：Service Worker 风格 `addEventListener("fetch", event => event.respondWith(...))`，**不支持 ES import**。
-- 控制台函数代码粘贴 `dist/edgeone-edge-function.js`（已内联核心，单文件），再配置匹配站点 HOST / 路径的触发规则。
-- 当前生产域名：`https://bili.cotd.top`（站点 `cotd.top`，触发规则按 HOST 命中本函数）；免费证书签发前浏览器会提示证书不安全，命令行可加 `-k` 验证。
-- 实测（BV1qYyRz5EdM，360P 回落片）：解析 200 JSON，边缘出口未被 B 站 WAF 412；`/api/stream` 代理 8MB 分片持续约 **2.0–2.2 MB/s**，对照同片 ESA 约 **433 KB/s**，EdgeOne 代理带宽明显更高。
+1. EdgeOne 控制台进入站点 → 边缘函数 → 函数管理，新建函数。该运行时为 Service Worker 风格，**不支持 ES import**，必须使用内联后的 `dist/edgeone-edge-function.js`。
+2. 粘贴 `dist/edgeone-edge-function.js`；需要解高清时在"环境变量与密钥"中添加 Secret `BILI_COOKIE`，改动后需重新部署生效。
+3. 在"触发配置"新增触发规则：按 HOST 命中绑定域名（如 `bili.cotd.top`）→ 执行该函数。
+4. 绑定站点内已加速的自定义域名并签发免费证书；默认函数域名 `*.eo-edgefunctions1.com` 从大陆网络 TLS 握手会被重置，不能作为正式入口。
+5. 当前生产：`https://bili.cotd.top`。节点优选到正规 `bilivideo.com` 后可稳定取 720P；代理 8MB 分片约 **2.9–3.1 MB/s**，对照同片 ESA 约 **433 KB/s**。
 
 ### 腾讯 EdgeOne Pages Functions
 
-- 把 `dist/edgeone-pages-function.js` 内容放到 Pages 项目 `edge-functions/[[default]].js`。
-- 默认导出 `onRequest({ request })`，所有路径进入同一处理函数。
+1. Pages 项目下新建 `edge-functions/[[default]].js`。
+2. 粘贴 `dist/edgeone-pages-function.js`（默认导出 `onRequest({ request })`），所有路径进入同一处理函数。
 
 ## 第三方解析中转（可选）
 
