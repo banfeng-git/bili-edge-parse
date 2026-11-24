@@ -5,8 +5,8 @@
  * 路由：
  *   /api/parse/<BV号>                           返回 JSON 信息 + 代理/直链地址
  *   /api/parse/pay/<BV号>                       同上，pay 为可选分类段
- *   /api/watch/<BV号>                           网页播放页（直链优先，出错回退代理）
- *   /api/play/<BV号>                            浏览器打开出播放页；播放器取流 302 跳代理
+ *   /api/watch/<BV号>                           网页播放页（统一本站代理起播）
+ *   /api/play/<BV号>                            浏览器打开出播放页；播放器取流 302 跳本站代理
  *   /api/parse/play/<BV号>                      同上（play 为播放动作段）
  *   /api/stream?u=<上游地址>&b=<备用地址>        流代理（注入 Referer，透传 Range）
  *   其他路径                                    返回说明页
@@ -229,7 +229,8 @@ function createHandler(options) {
   }
 
   /**
-   * 宽松节点：浏览器 UA、不带 Referer 也能取流（实测 akamai 节点放行）。
+   * akamai 宽松域：`.akamaized.net` / `.akamaihd.net`。注意裸连是否放行不稳定，
+   * 2026-11-25 实测 mirrorakam 无 Referer 同样 403；统一经本站代理补 Referer 回源。
    * bilivideo 主域必须携带 Referer: https://www.bilibili.com/，否则 403。
    */
   function isLooseHost(href) {
@@ -258,7 +259,7 @@ function createHandler(options) {
     }
   }
 
-  /** 节点打分：宽松可裸连加分，P2P 坏节点重扣分，其余放行节点给基础分。 */
+  /** 节点打分：akamai 域略加分，P2P 坏节点重扣分，其余放行节点给基础分。加分仅作节点标识，不代表裸连可播。 */
   function hostRank(href) {
     if (!isAllowedStreamHost(href)) return -1;
     let rank = 1;
@@ -267,13 +268,13 @@ function createHandler(options) {
     return rank;
   }
 
-  /** 候选流按节点质量降序：正规 CDN / 宽松节点优先，P2P 坏节点垫底。 */
+  /** 候选流按节点质量降序：放行节点优先，P2P 坏节点垫底。 */
   function rankedStreams(info) {
     const candidates = [info.streamUrl, ...(info.backupUrls || [])].filter(Boolean);
     return candidates.sort((a, b) => hostRank(b) - hostRank(a));
   }
 
-  /** 选直链：取质量最优的一条；宽松节点可裸连，其余需客户端自带 B 站 Referer。 */
+  /** 选直链：取质量最优的一条；仅提供给能自定义 Referer 的播放器，普通浏览器/App 请用 proxy。 */
   function pickDirect(info) {
     return rankedStreams(info)[0] || "";
   }
@@ -392,10 +393,9 @@ v.addEventListener('error', () => {
       if (!bvid) return jsonResponse({ code: 400, message: "缺少 BV 号" }, 400);
       try {
         const info = await resolveVideo(bvid, page, qn);
-        // B 站 CDN 签名直链（优先宽松节点），网页页直连优先；proxy 为出错/不兼容客户端的代理兜底。
+        // direct 为 CDN 签名直链（仅给能自定义 Referer 的播放器）；proxy 为本站代理，网页页与 play 302 统一走它。
         const direct = pickDirect(info);
         const proxy = proxyStreamUrl(url.origin, info);
-        const loose = isLooseHost(direct);
         const accept = request.headers.get("Accept") || "";
         const wantHtml = isWatch || (isPlay && accept.includes("text/html"));
         if (wantHtml) {
@@ -406,9 +406,10 @@ v.addEventListener('error', () => {
           });
         }
         if (isPlay) {
-          // 宽松节点裸连即可播，直连减少代理回源；主域必须带 Referer，走本站代理兜底。
-          const playTarget = loose ? direct : proxy;
-          return Response.redirect(playTarget, 302);
+          // 实测宽松 akamai 节点裸连（无 Referer）同样 403；302 统一跳本站代理：
+          // 机房出口补 Referer、节点经质量优选、带 backup 兜底。direct 直链仅在 parse JSON
+          // 中提供给能自定义 Referer 的播放器（MPV、IINA 等）。
+          return Response.redirect(proxy, 302);
         }
         return jsonResponse({
           code: 0,
