@@ -125,14 +125,13 @@ function createHandler(options) {
     };
   }
 
-  /** 直连 B 站取流（默认请求 480P，未登录可能回落 360P） */
-  async function resolveDirect(bvid, page) {
-    const cookie = await fetchBuvid();
-
-    const pl = await fetchJson(
-      `https://api.bilibili.com/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`,
-      cookie,
-    );
+  /** 直连 B 站取流（请求 1080P 档，按游客身份回落至 720P/360P；qn 可被查询参数覆盖） */
+  async function resolveDirect(bvid, page, qn) {
+    // buvid 与分 P 列表互不依赖，并行请求以降低首屏延迟。
+    const [cookie, pl] = await Promise.all([
+      fetchBuvid(),
+      fetchJson(`https://api.bilibili.com/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`, ""),
+    ]);
     if (pl.code !== 0) {
       throw new Error(`[pagelist ${pl.code}] ${pl.message || "分P信息获取失败"}`);
     }
@@ -146,26 +145,27 @@ function createHandler(options) {
     let desc = "";
     let pic = pItem.first_frame || "";
     let aid = 0;
-    try {
-      const det = await fetchJson(
-        `https://api.bilibili.com/x/web-interface/view/detail?bvid=${encodeURIComponent(bvid)}`,
-        cookie,
-      );
-      if (det.code === 0 && det.data && det.data.View) {
-        const v = det.data.View;
-        title = v.title || title;
-        desc = v.desc || "";
-        pic = v.pic || pic;
-        aid = v.aid || aid;
-      }
-    } catch {
-      /* 兜底接口忽略 */
-    }
 
+    const playQn = qn || 80;
     const playUrl =
       `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(bvid)}` +
-      `&cid=${cid}&qn=32&fnval=1&fourk=1&otype=json`;
-    const play = await fetchJson(playUrl, cookie);
+      `&cid=${cid}&qn=${playQn}&fnval=1&fourk=1&otype=json`;
+    // 详情（标题/封面）与播放地址互不依赖，并行请求；详情失败不影响取流。
+    const [det, play] = await Promise.all([
+      fetchJson(
+        `https://api.bilibili.com/x/web-interface/view/detail?bvid=${encodeURIComponent(bvid)}`,
+        cookie,
+      ).catch(() => ({ code: -1 })),
+      fetchJson(playUrl, cookie),
+    ]);
+    if (det.code === 0 && det.data && det.data.View) {
+      const v = det.data.View;
+      title = v.title || title;
+      desc = v.desc || "";
+      pic = v.pic || pic;
+      aid = v.aid || aid;
+    }
+
     if (play.code !== 0) {
       throw new Error(`[playurl ${play.code}] ${play.message || "播放地址获取失败"}`);
     }
@@ -193,9 +193,9 @@ function createHandler(options) {
     };
   }
 
-  async function resolveVideo(bvid, page) {
+  async function resolveVideo(bvid, page, qn) {
     if (CONFIG.PARSE_KEY) return resolveViaThirdParty(bvid, page);
-    return resolveDirect(bvid, page);
+    return resolveDirect(bvid, page, qn);
   }
 
   function proxyStreamUrl(origin, info) {
@@ -298,8 +298,12 @@ function createHandler(options) {
 </body></html>`;
   }
 
-  function watchHtml(info, direct, proxy) {
-    const cfg = JSON.stringify({ direct, proxy });
+  function watchHtml(info, src, proxy, mode) {
+    const cfg = JSON.stringify({ proxy });
+    const noteText =
+      mode === "direct"
+        ? `清晰度 ${escapeHtml(info.qualityDesc)} · 直连 CDN 播放`
+        : `清晰度 ${escapeHtml(info.qualityDesc)} · 本站代理播放（已补 Referer）`;
     return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
@@ -311,15 +315,15 @@ video{width:100%;max-width:900px;aspect-ratio:16/9;background:#000;border-radius
 #note{margin-top:10px;font-size:13px;color:#999}
 </style></head><body>
 <h1>${escapeHtml(info.title)}</h1>
-<video id="v" controls playsinline autoplay muted preload="metadata" referrerpolicy="no-referrer" poster="${escapeHtml(info.poster)}" src="${escapeHtml(direct)}"></video>
-<div id="note">清晰度 ${escapeHtml(info.qualityDesc)} · 直连 CDN 播放</div>
+<video id="v" controls playsinline autoplay muted preload="metadata" referrerpolicy="no-referrer" poster="${escapeHtml(info.poster)}" src="${escapeHtml(src)}"></video>
+<div id="note">${noteText}</div>
 <script>
 const cfg = ${cfg};
 const v = document.getElementById('v');
 const note = document.getElementById('note');
 let fallback = false;
 v.addEventListener('error', () => {
-  if (fallback) return;
+  if (fallback || !cfg.proxy) return;
   fallback = true;
   note.textContent = '直链被防盗链拦截，已切换本站代理播放';
   v.src = cfg.proxy;
@@ -342,25 +346,32 @@ v.addEventListener('error', () => {
     let bvid = routeMatch ? extractBvid(decodeURIComponent(routeMatch[3])) : null;
     if (!bvid) bvid = extractBvid(url.searchParams.get("url") || "");
     const page = parseInt(url.searchParams.get("p") || "1", 10) || 1;
+    const qn = parseInt(url.searchParams.get("qn") || "", 10) || 0;
     const isPlay = seg1 === "play" || seg2 === "play";
     const isWatch = seg1 === "watch";
 
     if (path.startsWith("/api/parse") || path.startsWith("/api/play") || path.startsWith("/api/watch")) {
       if (!bvid) return jsonResponse({ code: 400, message: "缺少 BV 号" }, 400);
       try {
-        const info = await resolveVideo(bvid, page);
+        const info = await resolveVideo(bvid, page, qn);
         // B 站 CDN 签名直链（优先宽松节点），网页页直连优先；proxy 为出错/不兼容客户端的代理兜底。
         const direct = pickDirect(info);
         const proxy = proxyStreamUrl(url.origin, info);
+        const loose = isLooseHost(direct);
         const accept = request.headers.get("Accept") || "";
         const wantHtml = isWatch || (isPlay && accept.includes("text/html"));
         if (wantHtml) {
-          return new Response(watchHtml(info, direct, proxy), {
+          // 宽松节点裸连直放；只有主域节点时网页页直接用代理起播，避免先 403 再回退。
+          const watchSrc = loose ? direct : proxy;
+          const watchMode = loose ? "direct" : "proxy";
+          return new Response(watchHtml(info, watchSrc, loose ? proxy : "", watchMode), {
             headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
           });
         }
         if (isPlay) {
-          return Response.redirect(proxy, 302);
+          // 宽松节点裸连即可播，直连减少代理回源；主域必须带 Referer，走本站代理兜底。
+          const playTarget = loose ? direct : proxy;
+          return Response.redirect(playTarget, 302);
         }
         return jsonResponse({
           code: 0,
