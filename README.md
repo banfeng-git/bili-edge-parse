@@ -84,6 +84,7 @@ npm run build
 ## 清晰度与限制
 
 - 默认请求 1080P 档（`qn=80`，可用 `?qn=` 覆盖）。**2026-11-25 实测**：同一 BV、同一接口，住宅/普通出口带不带 cookie 都能拿到 720P（quality 64），但 EdgeOne 边缘机房出口被风控压到 360P（quality 16），与 buvid/cookie、qn 参数无关，是机房 IP 段身份限档；免费边缘函数平台普遍如此。稳定 720P 及以上需上游登录态（SESSDATA）、住宅出口 VPS 或第三方中转后端。
+- **登录 Cookie（可选，解高清）**：在平台边缘函数的环境变量/密钥中配置 `BILI_COOKIE`，值为完整登录 Cookie 串（`SESSDATA=...; bili_jct=...; DedeUserID=...`），代码运行时读取并随上游请求带上；凭证只存平台 Secret，不写入代码与仓库。未配置时按游客身份取流。机房出口叠加登录态能否解除 360P 限档需线上验证。
 - 会员专属、付费、已下架内容无法解析。上游流地址有时效，过期后重新请求解析接口刷新即可。
 - B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl）；`direct` 为签名直链，`proxy` 字段为边缘代理回退。
 - 流代理白名单后缀：`.bilivideo.com`、`.bilivideo.cn`、`.akamaihd.net`、`.akamaized.net`、`.mountaintoys.cn`，非这些域名的地址一律 403，避免被当成开放代理。

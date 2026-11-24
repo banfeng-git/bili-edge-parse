@@ -65,6 +65,8 @@ function createHandler(options) {
   const CONFIG = {
     PARSE_KEY: (options && options.parseKey) || "",
     PARSE_BASE: (options && options.parseBase) || "https://xiaoapi.cn",
+    // 完整登录 Cookie 串（SESSDATA=...; bili_jct=...; DedeUserID=...），由平台环境变量注入，不落代码/仓库。
+    BILI_COOKIE: (options && options.biliCookie) || "",
   };
 
   async function fetchJson(url, cookie, init) {
@@ -132,7 +134,7 @@ function createHandler(options) {
   /** 直连 B 站取流（请求 1080P 档，按游客身份回落至 720P/360P；qn 可被查询参数覆盖） */
   async function resolveDirect(bvid, page, qn) {
     // buvid 与分 P 列表互不依赖，并行请求以降低首屏延迟。
-    const [cookie, pl] = await Promise.all([
+    const [buvid, pl] = await Promise.all([
       fetchBuvid(),
       fetchJson(`https://api.bilibili.com/x/player/pagelist?bvid=${encodeURIComponent(bvid)}`, ""),
     ]);
@@ -144,6 +146,9 @@ function createHandler(options) {
     const pIdx = Math.min(Math.max(page, 1), items.length) - 1;
     const pItem = items[pIdx];
     const cid = pItem.cid;
+
+    // 合并游客 buvid 与注入的登录 Cookie（SESSDATA 等），空值忽略。
+    const cookie = [buvid, CONFIG.BILI_COOKIE].filter(Boolean).join("; ");
 
     let title = pItem.part || bvid;
     let desc = "";

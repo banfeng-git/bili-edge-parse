@@ -5,7 +5,9 @@
  */
 import { createHandler } from "../core.js";
 
-const { handleRequest } = createHandler();
+// 登录 Cookie（Secret 环境变量 BILI_COOKIE）由控制台注入；代码与仓库不保存凭证。
+const biliCookie = (typeof env !== "undefined" && env.BILI_COOKIE) || "";
+const { handleRequest } = createHandler({ biliCookie });
 
 addEventListener("fetch", (event) => {
   event.respondWith(handleRequest(event.request));
