@@ -204,9 +204,12 @@ function createHandler(options) {
   }
 
   function proxyStreamUrl(origin, info) {
-    const target = info.streamUrl || info.backupUrl;
+    // 代理回源也按节点质量优选：主链取最优节点，次优节点作为 backup 供回源失败时切换。
+    const list = rankedStreams(info);
+    const target = list[0] || info.streamUrl || info.backupUrl || "";
+    const backup = list[1] || "";
     const u = encodeURIComponent(target);
-    const b = info.backupUrl ? `&b=${encodeURIComponent(info.backupUrl)}` : "";
+    const b = backup ? `&b=${encodeURIComponent(backup)}` : "";
     return `${origin}/api/stream?u=${u}${b}`;
   }
 
@@ -238,11 +241,41 @@ function createHandler(options) {
     }
   }
 
-  /** 选直链：优先宽松节点（无 Referer 可播），其次原始主域。 */
-  function pickDirect(info) {
+  /**
+   * P2P 边缘坏节点：实测 1–2M/s 且频繁 Connection reset（mcdn、mountaintoys 专属域），
+   * 正规 CDN（bilivideo.com）5–25M/s 稳定。命中坏节点时应优先换 backup 里的正规 CDN。
+   */
+  function isP2PHost(href) {
+    try {
+      const h = new URL(href).hostname;
+      return (
+        h.includes("mcdn.bilivideo") ||
+        h.includes("edge.mountaintoys") ||
+        h.endsWith(".mountaintoys.cn")
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** 节点打分：宽松可裸连加分，P2P 坏节点重扣分，其余放行节点给基础分。 */
+  function hostRank(href) {
+    if (!isAllowedStreamHost(href)) return -1;
+    let rank = 1;
+    if (isLooseHost(href)) rank += 2;
+    if (isP2PHost(href)) rank -= 3;
+    return rank;
+  }
+
+  /** 候选流按节点质量降序：正规 CDN / 宽松节点优先，P2P 坏节点垫底。 */
+  function rankedStreams(info) {
     const candidates = [info.streamUrl, ...(info.backupUrls || [])].filter(Boolean);
-    const loose = candidates.find(isLooseHost);
-    return loose || candidates[0] || "";
+    return candidates.sort((a, b) => hostRank(b) - hostRank(a));
+  }
+
+  /** 选直链：取质量最优的一条；宽松节点可裸连，其余需客户端自带 B 站 Referer。 */
+  function pickDirect(info) {
+    return rankedStreams(info)[0] || "";
   }
 
   async function handleStream(request) {
@@ -366,10 +399,9 @@ v.addEventListener('error', () => {
         const accept = request.headers.get("Accept") || "";
         const wantHtml = isWatch || (isPlay && accept.includes("text/html"));
         if (wantHtml) {
-          // 宽松节点裸连直放；只有主域节点时网页页直接用代理起播，避免先 403 再回退。
-          const watchSrc = loose ? direct : proxy;
-          const watchMode = loose ? "direct" : "proxy";
-          return new Response(watchHtml(info, watchSrc, loose ? proxy : "", watchMode), {
+          // 网页页统一走本站代理起播：实测宽松 akamai 节点也可能被防盗链 403，
+          // 先直连撞墙再回退只会增加起播延迟；代理已补 Referer 且节点经质量优选。
+          return new Response(watchHtml(info, proxy, "", "proxy"), {
             headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
           });
         }

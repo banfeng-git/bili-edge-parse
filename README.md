@@ -88,6 +88,7 @@ npm run build
 - 会员专属、付费、已下架内容无法解析。上游流地址有时效，过期后重新请求解析接口刷新即可。
 - B 站上游不提供原生 m3u8，返回音视频合流 mp4（durl）；`direct` 为签名直链，`proxy` 字段为边缘代理回退。
 - 流代理白名单后缀：`.bilivideo.com`、`.bilivideo.cn`、`.akamaihd.net`、`.akamaized.net`、`.mountaintoys.cn`，非这些域名的地址一律 403，避免被当成开放代理。
+- 节点质量分级：选流与代理回源优先正规 `bilivideo.com` / 宽松 akamai；P2P 坏节点（`mcdn.bilivideo*`、`edge.mountaintoys*`、`*.mountaintoys.cn`，实测 1–2M/s 且频繁断连）降为兜底，命中时自动从 backup 换正规 CDN。
 
 ### 浏览器 / 普通 App 播放的两层限制（2026-11-25 实测）
 
