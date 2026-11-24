@@ -13,8 +13,8 @@ B 站视频解析边缘函数。把 BV 号拼到 API 域名后即可拿到直连
 
 - 分 P：加 `?p=2`；也支持完整链接：`/api/parse?url=https://www.bilibili.com/video/BVxxxx/`
 - 播放器直接填 `/api/play/<BV号>` 即可：边缘函数只做解析，302 跳到 B 站 CDN 签名地址，播放流量直连 B 站服务器、不经函数中转。
-- JSON `data` 字段：`play` 为 B 站 CDN 直链（默认播放），`proxy` 为经边缘函数的代理回退，`raw` / `backup` 为原始主备签名地址。
-- 代理回退自动携带 `Referer: https://www.bilibili.com/`，透传 `Range` 请求，支持拖动进度；直链在无法自带 Referer 的播放器里可能 403，此时改用 `proxy`。
+- JSON `data` 字段：`play` 为优先选出的 CDN 直链（优先 akamai 等不带 Referer 也能放行的宽松节点），`raw` 为上游主域签名地址，`backup` / `backups` 为备用流域名列表，`proxy` 为经边缘函数的代理回退。
+- Referer 现实：bilivideo 主域必须带 `Referer: https://www.bilibili.com/`，否则 403；akamai 节点带浏览器 UA、不带 Referer 一般可播。网页内嵌播放器请把 Referrer 策略设为 `no-referrer`；若直链仍被拦，改用 `proxy`（代理自动补 Referer、透传 Range，支持拖动，但受免费函数出口带宽限制）。
 - 示例：`https://bili.466949.xyz/api/play/BV1qYyRz5EdM`
 
 ## 目录结构

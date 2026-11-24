@@ -118,6 +118,7 @@ function createHandler(options) {
       qualityDesc: s.quality_text || qualityDesc(s.quality || 0),
       format: s.format || "",
       streamUrl,
+      backupUrls: backupUrl ? [backupUrl] : [],
       backupUrl,
     };
   }
@@ -185,6 +186,7 @@ function createHandler(options) {
       qualityDesc: qualityDesc(d.quality || 0),
       format: d.format || "",
       streamUrl: durl.url,
+      backupUrls: durl.backup_url || [],
       backupUrl: (durl.backup_url || [])[0] || "",
     };
   }
@@ -214,6 +216,26 @@ function createHandler(options) {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * 宽松节点：浏览器 UA、不带 Referer 也能取流（实测 akamai 节点放行）。
+   * bilivideo 主域必须携带 Referer: https://www.bilibili.com/，否则 403。
+   */
+  function isLooseHost(href) {
+    try {
+      const host = new URL(href).hostname;
+      return host.endsWith(".akamaized.net") || host.endsWith(".akamaihd.net");
+    } catch {
+      return false;
+    }
+  }
+
+  /** 选直链：优先宽松节点（无 Referer 可播），其次原始主域。 */
+  function pickDirect(info) {
+    const candidates = [info.streamUrl, ...(info.backupUrls || [])].filter(Boolean);
+    const loose = candidates.find(isLooseHost);
+    return loose || candidates[0] || "";
   }
 
   async function handleStream(request) {
@@ -258,6 +280,7 @@ function createHandler(options) {
   function indexHtml() {
     return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <title>B 站视频解析</title>
 <style>body{font-family:system-ui,sans-serif;max-width:720px;margin:48px auto;padding:0 20px;line-height:1.7}code,pre{background:rgba(127,127,127,.15);border-radius:6px;padding:2px 6px}pre{padding:12px;overflow:auto}</style>
 </head><body><h1>B 站视频解析</h1>
@@ -288,8 +311,8 @@ function createHandler(options) {
       if (!bvid) return jsonResponse({ code: 400, message: "缺少 BV 号" }, 400);
       try {
         const info = await resolveVideo(bvid, page);
-        // 默认直连 B 站 CDN 签名地址，播放流量不经过边缘函数中转。
-        const direct = info.streamUrl || info.backupUrl;
+        // 直连 B 站 CDN 签名地址，播放流量不经过边缘函数中转；优先宽松节点。
+        const direct = pickDirect(info);
         // 代理地址仅作回退：播放器无法自带 Referer 时再用。
         const proxy = proxyStreamUrl(url.origin, info);
         if (isPlay) {
@@ -314,6 +337,7 @@ function createHandler(options) {
             proxy,
             raw: info.streamUrl,
             backup: info.backupUrl,
+            backups: info.backupUrls || [],
           },
         });
       } catch (e) {
